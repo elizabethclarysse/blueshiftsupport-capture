@@ -845,10 +845,18 @@ def admin_dashboard():
 def upload_recording():
     """Handle recording upload to Google Drive"""
     try:
+        print("🔍 Upload endpoint called")
+        
         recording_file = request.files.get('recording')
         duration = request.form.get('duration', '00:00')
         
+        print(f"🔍 Recording file: {recording_file}")
+        print(f"🔍 Duration: {duration}")
+        print(f"🔍 Google Drive available: {google_drive_available}")
+        print(f"🔍 Credentials set: {bool(GOOGLE_CREDENTIALS_JSON)}")
+        
         if not recording_file:
+            print("❌ No recording file provided")
             return jsonify({"error": "No recording file provided"}), 400
         
         # Generate unique filename
@@ -856,14 +864,20 @@ def upload_recording():
         unique_id = str(uuid.uuid4())[:8]
         filename = f"blueshift-recording-{timestamp}-{unique_id}.webm"
         
+        print(f"🔍 Generated filename: {filename}")
+        
         # Read file data
         file_data = recording_file.read()
+        print(f"🔍 File data size: {len(file_data)} bytes")
         
         # Upload to Google Drive
         if not google_drive_available:
+            print("❌ Google Drive integration not available")
             return jsonify({"error": "Google Drive integration not available"}), 500
         
+        print("🔍 Calling upload_to_google_drive...")
         drive_url, error_message = upload_to_google_drive(file_data, filename)
+        print(f"🔍 Upload result: URL={drive_url}, Error={error_message}")
         
         if drive_url:
             # Log the recording
@@ -882,6 +896,7 @@ def upload_recording():
             if len(recording_log) > 100:
                 recording_log.pop(0)
             
+            print("✅ Upload successful, returning success response")
             return jsonify({
                 "success": True,
                 "drive_url": drive_url,
@@ -889,13 +904,18 @@ def upload_recording():
                 "message": "Recording uploaded to Google Drive successfully"
             })
         else:
+            print(f"❌ Upload failed: {error_message}")
             return jsonify({
                 "error": f"Google Drive upload failed: {error_message or 'Unknown error'}",
                 "fallback": True
             }), 500
             
     except Exception as e:
-        return jsonify({"error": f"Upload failed: {str(e)}"}), 500
+        error_msg = f"Upload failed: {str(e)}"
+        print(f"❌ Exception in upload endpoint: {error_msg}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": error_msg}), 500
 
 @app.route('/health')
 def health():
