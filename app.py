@@ -472,7 +472,8 @@ CUSTOMER_INTERFACE = '''
 
         <div style="margin-top: 40px; padding: 20px; background: #f8f9fa; border-radius: 10px; border-left: 4px solid #667eea; text-align: center;">
             <p style="color: #666; font-size: 14px; margin: 0; line-height: 1.6;">
-                <strong>Consent Notice:</strong> You consent to your screen, user actions and audio being recorded by Blueshift Labs, Inc. for the purposes of providing support for the Blueshift platform.
+                <strong>Consent Notice:</strong> 
+                You consent to your screen, user actions and audio being recorded by Blueshift Labs, Inc. for the purposes of providing support for the Blueshift platform.
             </p>
         </div>
     </div>
