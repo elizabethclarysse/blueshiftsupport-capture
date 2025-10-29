@@ -4,7 +4,7 @@ Production Screen Recording App with Google Drive Integration
 Uploads recordings to Google Drive and generates shareable links
 """
 
-from flask import Flask, render_template_string, request, jsonify, session, redirect, url_for
+from flask import Flask, render_template_string, request, jsonify, session, redirect, url_for, Response
 import os
 import json
 import hashlib
@@ -63,7 +63,7 @@ def upload_to_google_drive(file_data, filename):
         
         if not GOOGLE_CREDENTIALS_JSON:
             error_msg = "Google Drive credentials not configured"
-            print(f"❌ {error_msg}")
+            log_error(error_msg)
             return None, error_msg
         
         print(f"✅ Credentials found, parsing JSON...")
@@ -131,20 +131,38 @@ def upload_to_google_drive(file_data, filename):
         
     except Exception as e:
         error_msg = f"Google Drive upload error: {str(e)}"
-        print(f"❌ {error_msg}")
+        log_error(error_msg)
+        log_error(f"Full traceback: {traceback.format_exc()}")
         import traceback
         traceback.print_exc()
         return None, error_msg
 
+# Recording storage - in-memory storage for recordings
+recordings_storage = {}
 # Recording storage log
 recording_log = []
+# Error logs for debugging
+error_log = []
+
+def log_error(message):
+    """Add error message to log with timestamp"""
+    error_entry = {
+        "timestamp": datetime.now().isoformat(),
+        "message": str(message)
+    }
+    error_log.append(error_entry)
+    print(f"❌ LOG: {message}")
+    
+    # Keep only last 50 errors
+    if len(error_log) > 50:
+        error_log.pop(0)
 
 # Templates
 CUSTOMER_INTERFACE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Record Your Issue - Blueshift Support</title>
+    <title>Blueshift Support Screen Capture</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
@@ -372,9 +390,9 @@ CUSTOMER_INTERFACE = '''
 <body>
     <div class="container">
         <div class="header">
-            <h1>🎥 Screen Recording Tool</h1>
+            <h1><img src="/blueshift_logo.png" alt="Blueshift" style="height: 24px; width: 24px; vertical-align: middle; margin-right: 8px;"> Blueshift Support Screen Capture</h1>
             <p>Show us your issue by recording your screen</p>
-            <p style="font-size: 1em; color: #888;">Blueshift Support - Help us help you faster</p>
+            <p style="font-size: 1em; color: #888;">Help us help you faster</p>
         </div>
 
         <div class="step-guide">
@@ -390,13 +408,13 @@ CUSTOMER_INTERFACE = '''
             </div>
             <div class="step">
                 <div class="step-number">3</div>
-                <h4>Get Google Drive Link</h4>
-                <p>We'll upload to Google Drive and give you a shareable link</p>
+                <h4>Share the Recording</h4>
+                <p>Copy the unique link and paste it in your support ticket</p>
             </div>
         </div>
 
         <div class="record-section">
-            <button id="recordBtn" class="record-btn">🎬 Start Screen Recording</button>
+            <button id="recordBtn" class="record-btn"><img src="/blueshift_logo.png" alt="Blueshift" style="height: 16px; width: 16px; vertical-align: middle; margin-right: 4px;"> Start Screen Recording</button>
             <button id="stopBtn" class="record-btn" disabled>⏹️ Stop Recording</button>
             
             <div class="recording-status" id="recordingStatus">
@@ -407,7 +425,7 @@ CUSTOMER_INTERFACE = '''
 
         <div class="loading" id="loadingSection">
             <div class="spinner"></div>
-            <p>Uploading your recording to Google Drive...</p>
+            <p>Processing your recording...</p>
         </div>
 
         <div class="preview-area" id="previewArea">
@@ -418,14 +436,14 @@ CUSTOMER_INTERFACE = '''
         </div>
 
         <div class="share-section" id="shareSection">
-            <h3>🔗 Your Recording is on Google Drive!</h3>
-            <p>Your video has been uploaded to our secure Google Drive folder. Here's your shareable link:</p>
+            <h3>🔗 Your Recording is Ready!</h3>
+            <p>Your video has been saved. Copy this unique link and paste it in your support ticket:</p>
             
             <div class="google-drive-link">
-                <h4>📄 Google Drive Link</h4>
-                <input type="text" id="driveUrl" readonly>
-                <button id="copyDriveBtn" class="submit-btn" style="background: #4285f4; width: 100%;">
-                    📋 Copy Google Drive Link to Share with Agent
+                <h4>📄 Recording Link</h4>
+                <input type="text" id="recordingUrl" readonly>
+                <button id="copyUrlBtn" class="submit-btn" style="background: #4285f4; width: 100%;">
+                    📋 Copy Link to Share with Agent
                 </button>
             </div>
 
@@ -440,7 +458,7 @@ CUSTOMER_INTERFACE = '''
                 
                 <div style="background: #fff3e0; padding: 20px; border-radius: 10px; text-align: center;">
                     <h4 style="color: #ef6c00; margin-top: 0;">📞 Next Steps</h4>
-                    <p style="color: #666;">Paste the Google Drive link in your support ticket or chat.</p>
+                    <p style="color: #666;">Paste the recording link in your support ticket or chat.</p>
                     <p style="font-size: 14px; color: #666;">✅ Agents can view directly</p>
                 </div>
             </div>
@@ -451,6 +469,12 @@ CUSTOMER_INTERFACE = '''
         </div>
 
         <div id="status"></div>
+
+        <div style="margin-top: 40px; padding: 20px; background: #f8f9fa; border-radius: 10px; border-left: 4px solid #667eea; text-align: center;">
+            <p style="color: #666; font-size: 14px; margin: 0; line-height: 1.6;">
+                <strong>Consent Notice:</strong> You consent to your screen, user actions and audio being recorded by Blueshift, Inc. for the purposes of providing support for the Blueshift platform.
+            </p>
+        </div>
     </div>
 
     <script>
@@ -468,8 +492,8 @@ CUSTOMER_INTERFACE = '''
         const status = document.getElementById('status');
         const recordingStatus = document.getElementById('recordingStatus');
         const timer = document.getElementById('timer');
-        const driveUrl = document.getElementById('driveUrl');
-        const copyDriveBtn = document.getElementById('copyDriveBtn');
+        const recordingUrl = document.getElementById('recordingUrl');
+        const copyUrlBtn = document.getElementById('copyUrlBtn');
         const downloadBtn = document.getElementById('downloadBtn');
 
         // Check browser compatibility
@@ -481,7 +505,7 @@ CUSTOMER_INTERFACE = '''
 
         recordBtn.addEventListener('click', startRecording);
         stopBtn.addEventListener('click', stopRecording);
-        copyDriveBtn.addEventListener('click', copyDriveLink);
+        copyUrlBtn.addEventListener('click', copyRecordingLink);
 
         async function startRecording() {
             try {
@@ -531,8 +555,8 @@ CUSTOMER_INTERFACE = '''
                     downloadBtn.href = localUrl;
                     downloadBtn.download = filename;
 
-                    // Upload to Google Drive
-                    await uploadToGoogleDrive(blob, filename);
+                    // Store recording and generate unique URL
+                    await storeRecording(blob, filename);
                 };
 
                 stream.getVideoTracks()[0].addEventListener('ended', () => {
@@ -543,14 +567,14 @@ CUSTOMER_INTERFACE = '''
                 
                 recordBtn.disabled = true;
                 stopBtn.disabled = false;
-                recordBtn.textContent = '🎬 Recording...';
+                recordBtn.innerHTML = '<img src="/blueshift_logo.png" alt="Blueshift" style="height: 16px; width: 16px; vertical-align: middle; margin-right: 4px;"> Recording...';
                 recordBtn.classList.add('recording');
                 recordingStatus.classList.add('active');
 
                 startTime = Date.now();
                 timerInterval = setInterval(updateTimer, 1000);
 
-                showStatus('🎥 Recording started! Please share your screen and show us the issue.', 'info');
+                showStatus('<img src="/blueshift_logo.png" alt="Blueshift" style="height: 16px; width: 16px; vertical-align: middle; margin-right: 4px;"> Recording started! Please share your screen and show us the issue.', 'info');
 
                 setTimeout(() => {
                     if (mediaRecorder && mediaRecorder.state === 'recording') {
@@ -572,7 +596,7 @@ CUSTOMER_INTERFACE = '''
                 
                 recordBtn.disabled = false;
                 stopBtn.disabled = true;
-                recordBtn.textContent = '🎬 Start Screen Recording';
+                recordBtn.innerHTML = '<img src="/blueshift_logo.png" alt="Blueshift" style="height: 16px; width: 16px; vertical-align: middle; margin-right: 4px;"> Start Screen Recording';
                 recordBtn.classList.remove('recording');
                 recordingStatus.classList.remove('active');
 
@@ -587,13 +611,13 @@ CUSTOMER_INTERFACE = '''
             timer.textContent = `${minutes}:${seconds}`;
         }
 
-        async function uploadToGoogleDrive(blob, filename) {
+        async function storeRecording(blob, filename) {
             try {
                 const formData = new FormData();
                 formData.append('recording', blob, filename);
                 formData.append('duration', timer.textContent);
 
-                const response = await fetch('/api/upload-recording', {
+                const response = await fetch('/api/store-recording', {
                     method: 'POST',
                     body: formData
                 });
@@ -602,39 +626,39 @@ CUSTOMER_INTERFACE = '''
                 
                 loadingSection.classList.remove('active');
 
-                if (response.ok && result.drive_url) {
-                    driveUrl.value = result.drive_url;
+                if (response.ok && result.recording_url) {
+                    recordingUrl.value = result.recording_url;
                     shareSection.classList.add('active');
-                    showStatus('✅ Recording uploaded to Google Drive! Your shareable link is ready.', 'success');
+                    showStatus('✅ Recording saved! Your unique link is ready.', 'success');
                 } else {
-                    throw new Error(result.error || 'Upload failed');
+                    throw new Error(result.error || 'Storage failed');
                 }
             } catch (error) {
-                console.error('Upload error:', error);
+                console.error('Storage error:', error);
                 loadingSection.classList.remove('active');
-                showStatus('❌ Google Drive upload failed. You can still download the recording and share it manually.', 'error');
+                showStatus('❌ Recording storage failed. You can still download the recording and share it manually.', 'error');
                 
                 // Show download option only
                 downloadBtn.style.display = 'block';
             }
         }
 
-        function copyDriveLink() {
-            driveUrl.select();
-            driveUrl.setSelectionRange(0, 99999);
+        function copyRecordingLink() {
+            recordingUrl.select();
+            recordingUrl.setSelectionRange(0, 99999);
             
             try {
-                navigator.clipboard.writeText(driveUrl.value).then(() => {
-                    copyDriveBtn.textContent = '✅ Google Drive Link Copied!';
-                    copyDriveBtn.style.background = '#34a853';
+                navigator.clipboard.writeText(recordingUrl.value).then(() => {
+                    copyUrlBtn.textContent = '✅ Link Copied!';
+                    copyUrlBtn.style.background = '#34a853';
                     setTimeout(() => {
-                        copyDriveBtn.textContent = '📋 Copy Google Drive Link to Share with Agent';
-                        copyDriveBtn.style.background = '#4285f4';
+                        copyUrlBtn.textContent = '📋 Copy Link to Share with Agent';
+                        copyUrlBtn.style.background = '#4285f4';
                     }, 3000);
                 });
             } catch (err) {
                 document.execCommand('copy');
-                showStatus('Google Drive link copied to clipboard!', 'success');
+                showStatus('Recording link copied to clipboard!', 'success');
             }
         }
 
@@ -650,11 +674,11 @@ CUSTOMER_INTERFACE = '''
             
             recordBtn.disabled = false;
             stopBtn.disabled = true;
-            recordBtn.textContent = '🎬 Start Screen Recording';
+            recordBtn.innerHTML = '<img src="/blueshift_logo.png" alt="Blueshift" style="height: 16px; width: 16px; vertical-align: middle; margin-right: 4px;"> Start Screen Recording';
             recordBtn.classList.remove('recording');
             
             recordedChunks = [];
-            driveUrl.value = '';
+            recordingUrl.value = '';
             
             showStatus('Ready to record again!', 'info');
         }
@@ -724,7 +748,7 @@ ADMIN_DASHBOARD_TEMPLATE = '''
 <body>
     <div class="header">
         <a href="/admin/logout" class="logout">Logout</a>
-        <h1>🛠️ Screen Recording Admin</h1>
+        <h1>🛠️ Blueshift Support Admin</h1>
         <p>Blueshift Support Tool Management</p>
     </div>
     
@@ -737,25 +761,6 @@ ADMIN_DASHBOARD_TEMPLATE = '''
         <p><strong>Public URL:</strong> <code>{{ request.url_root }}recording</code></p>
     </div>
     
-    <div class="container">
-        <h2>📁 Google Drive Status</h2>
-        {% if google_drive_enabled %}
-        <div class="google-drive-status drive-enabled">
-            <strong>✅ Google Drive Connected</strong><br>
-            Recordings are automatically uploaded to your Google Drive and customers get shareable links.
-            {% if folder_configured %}
-            <br>📁 Uploading to specific folder
-            {% else %}
-            <br>📁 Uploading to Drive root (consider setting GOOGLE_DRIVE_FOLDER_ID)
-            {% endif %}
-        </div>
-        {% else %}
-        <div class="google-drive-status drive-disabled">
-            <strong>❌ Google Drive Not Configured</strong><br>
-            Users can only download recordings locally. Configure Google Drive service account for shareable links.
-        </div>
-        {% endif %}
-    </div>
     
     <div class="container">
         <h2>📊 System Status</h2>
@@ -777,6 +782,14 @@ ADMIN_DASHBOARD_TEMPLATE = '''
                 <p>Protected</p>
             </div>
         </div>
+    </div>
+    
+    <div class="container">
+        <h2>🔍 Debugging</h2>
+        <p>If Google Drive uploads are failing, check the error logs:</p>
+        <a href="/admin/logs" class="customer-link" style="background: #dc3545;">
+            📝 View Error Logs
+        </a>
     </div>
     
     <div class="container">
@@ -803,6 +816,11 @@ ADMIN_DASHBOARD_TEMPLATE = '''
 @app.route('/')
 def index():
     return redirect(url_for('recording'))
+
+@app.route('/blueshift_logo.png')
+def blueshift_logo():
+    from flask import send_file
+    return send_file('blueshift_logo.png', mimetype='image/png')
 
 @app.route('/recording')
 def recording():
@@ -841,81 +859,327 @@ def admin_dashboard():
         folder_configured=folder_configured
     )
 
-@app.route('/api/upload-recording', methods=['POST'])
-def upload_recording():
-    """Handle recording upload to Google Drive"""
+@app.route('/admin/logs')
+@require_auth
+def admin_logs():
+    """Show recent error logs for debugging"""
+    logs_html = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Error Logs - Screen Recording Tool</title>
+    <style>
+        body { font-family: monospace; max-width: 1200px; margin: 0 auto; padding: 20px; background: #f5f7fa; }
+        .header { background: #007cba; color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+        .back-link { color: white; text-decoration: none; background: rgba(255,255,255,0.2); padding: 8px 15px; border-radius: 4px; }
+        .log-container { background: #1e1e1e; color: #f8f8f2; padding: 20px; border-radius: 8px; overflow-x: auto; max-height: 600px; overflow-y: auto; }
+        .log-entry { margin-bottom: 15px; padding: 10px; border-left: 3px solid #ff5555; background: rgba(255,85,85,0.1); }
+        .timestamp { color: #50fa7b; font-weight: bold; }
+        .refresh-btn { background: #28a745; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; margin: 10px 0; }
+        .no-errors { color: #50fa7b; text-align: center; padding: 40px; }
+    </style>
+    <script>
+        function refreshLogs() { 
+            location.reload(); 
+        }
+        setInterval(refreshLogs, 30000); // Auto refresh every 30 seconds
+    </script>
+</head>
+<body>
+    <div class="header">
+        <a href="/admin" class="back-link">← Back to Dashboard</a>
+        <h1>🔍 Error Logs</h1>
+        <p>Screen Capture Debugging</p>
+        <button class="refresh-btn" onclick="refreshLogs()">🔄 Refresh Logs</button>
+    </div>
+    
+    <div class="log-container">
+    '''
+    
+    if error_log:
+        for log_entry in reversed(error_log):  # Show newest first
+            logs_html += f'''
+        <div class="log-entry">
+            <span class="timestamp">[{log_entry['timestamp']}]</span><br>
+            {log_entry['message'].replace('<', '&lt;').replace('>', '&gt;')}
+        </div>
+            '''
+    else:
+        logs_html += '<div class="no-errors">✅ No errors recorded yet</div>'
+    
+    logs_html += '''
+    </div>
+</body>
+</html>
+    '''
+    
+    return logs_html
+
+@app.route('/api/store-recording', methods=['POST'])
+def store_recording():
+    """Handle recording storage with unique URL generation"""
     try:
-        print("🔍 Upload endpoint called")
+        print("🔍 Store recording endpoint called")
         
         recording_file = request.files.get('recording')
         duration = request.form.get('duration', '00:00')
         
         print(f"🔍 Recording file: {recording_file}")
         print(f"🔍 Duration: {duration}")
-        print(f"🔍 Google Drive available: {google_drive_available}")
-        print(f"🔍 Credentials set: {bool(GOOGLE_CREDENTIALS_JSON)}")
         
         if not recording_file:
             print("❌ No recording file provided")
             return jsonify({"error": "No recording file provided"}), 400
         
-        # Generate unique filename
+        # Generate unique ID and filename
         timestamp = int(time.time())
         unique_id = str(uuid.uuid4())[:8]
         filename = f"blueshift-recording-{timestamp}-{unique_id}.webm"
         
         print(f"🔍 Generated filename: {filename}")
+        print(f"🔍 Generated ID: {unique_id}")
         
         # Read file data
         file_data = recording_file.read()
         print(f"🔍 File data size: {len(file_data)} bytes")
         
-        # Upload to Google Drive
-        if not google_drive_available:
-            print("❌ Google Drive integration not available")
-            return jsonify({"error": "Google Drive integration not available"}), 500
+        # Store recording in memory (for now)
+        recordings_storage[unique_id] = {
+            "filename": filename,
+            "data": file_data,
+            "duration": duration,
+            "created_at": datetime.now().isoformat(),
+            "size_bytes": len(file_data),
+            "content_type": "video/webm"
+        }
         
-        print("🔍 Calling upload_to_google_drive...")
-        drive_url, error_message = upload_to_google_drive(file_data, filename)
-        print(f"🔍 Upload result: URL={drive_url}, Error={error_message}")
+        # Log the recording
+        recording_entry = {
+            "id": unique_id,
+            "filename": filename,
+            "duration": duration,
+            "stored_at": datetime.now().isoformat(),
+            "size_bytes": len(file_data)
+        }
         
-        if drive_url:
-            # Log the recording
-            recording_entry = {
-                "id": unique_id,
-                "filename": filename,
-                "drive_url": drive_url,
-                "duration": duration,
-                "uploaded_at": datetime.now().isoformat(),
-                "size_bytes": len(file_data)
-            }
-            
-            recording_log.append(recording_entry)
-            
-            # Keep only last 100 recordings in memory
-            if len(recording_log) > 100:
-                recording_log.pop(0)
-            
-            print("✅ Upload successful, returning success response")
-            return jsonify({
-                "success": True,
-                "drive_url": drive_url,
-                "recording_id": unique_id,
-                "message": "Recording uploaded to Google Drive successfully"
-            })
-        else:
-            print(f"❌ Upload failed: {error_message}")
-            return jsonify({
-                "error": f"Google Drive upload failed: {error_message or 'Unknown error'}",
-                "fallback": True
-            }), 500
+        recording_log.append(recording_entry)
+        
+        # Keep only last 100 recordings in memory
+        if len(recording_log) > 100:
+            recording_log.pop(0)
+        
+        # Generate unique URL
+        recording_url = f"{request.url_root}watch/{unique_id}"
+        
+        print(f"✅ Recording stored, URL: {recording_url}")
+        return jsonify({
+            "success": True,
+            "recording_url": recording_url,
+            "recording_id": unique_id,
+            "message": "Recording stored successfully"
+        })
             
     except Exception as e:
-        error_msg = f"Upload failed: {str(e)}"
-        print(f"❌ Exception in upload endpoint: {error_msg}")
+        error_msg = f"Storage failed: {str(e)}"
+        print(f"❌ Exception in store endpoint: {error_msg}")
+        log_error(error_msg)
         import traceback
         traceback.print_exc()
         return jsonify({"error": error_msg}), 500
+
+@app.route('/watch/<recording_id>')
+def watch_recording(recording_id):
+    """Serve recorded video by unique ID"""
+    try:
+        if recording_id not in recordings_storage:
+            return render_template_string('''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Recording Not Found</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 600px; margin: 100px auto; padding: 20px; text-align: center; background: #f5f7fa; }
+        .error-box { background: white; padding: 40px; border-radius: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
+        h1 { color: #dc3545; }
+        .back-link { background: #667eea; color: white; padding: 15px 30px; text-decoration: none; border-radius: 8px; display: inline-block; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <div class="error-box">
+        <h1>🔍 Recording Not Found</h1>
+        <p>The recording you're looking for doesn't exist or may have expired.</p>
+        <a href="/recording" class="back-link">🎬 Create New Recording</a>
+    </div>
+</body>
+</html>
+            '''), 404
+        
+        recording = recordings_storage[recording_id]
+        
+        # Return video player HTML
+        return render_template_string('''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Blueshift Support Recording</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            line-height: 1.6; 
+            margin: 0; 
+            padding: 20px; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+            min-height: 100vh; 
+        }
+        .container { 
+            max-width: 900px; 
+            margin: 0 auto; 
+            background: white; 
+            padding: 40px; 
+            border-radius: 15px; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2); 
+        }
+        .header { text-align: center; margin-bottom: 30px; padding-bottom: 20px; border-bottom: 3px solid #667eea; }
+        .header h1 { color: #333; margin: 0; font-size: 2.5em; }
+        .header p { color: #666; font-size: 1.2em; margin: 10px 0; }
+        .video-container { text-align: center; margin: 30px 0; }
+        .video-player { 
+            width: 100%; 
+            max-width: 800px; 
+            border-radius: 10px; 
+            box-shadow: 0 8px 25px rgba(0,0,0,0.3); 
+        }
+        .recording-info { 
+            background: #f8f9fa; 
+            padding: 20px; 
+            border-radius: 10px; 
+            margin: 30px 0; 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); 
+            gap: 20px; 
+        }
+        .info-item { text-align: center; }
+        .info-label { font-weight: bold; color: #667eea; }
+        .info-value { font-size: 1.2em; color: #333; }
+        .download-section { text-align: center; margin: 30px 0; }
+        .download-btn { 
+            background: linear-gradient(135deg, #667eea, #764ba2); 
+            color: white; 
+            padding: 15px 30px; 
+            border: none; 
+            border-radius: 8px; 
+            text-decoration: none; 
+            font-size: 16px; 
+            display: inline-block; 
+            margin: 10px; 
+            transition: all 0.3s ease; 
+            box-shadow: 0 4px 15px rgba(102,126,234,0.3); 
+        }
+        .download-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(102,126,234,0.4); }
+        .create-new { text-align: center; margin-top: 40px; padding-top: 30px; border-top: 2px solid #eee; }
+        .create-btn { 
+            background: #28a745; 
+            color: white; 
+            padding: 15px 30px; 
+            text-decoration: none; 
+            border-radius: 8px; 
+            display: inline-block; 
+            transition: all 0.3s ease; 
+        }
+        .create-btn:hover { background: #218838; transform: translateY(-2px); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎥 Screen Recording</h1>
+            <p>Blueshift Support - Customer Issue Recording</p>
+        </div>
+
+        <div class="video-container">
+            <video class="video-player" controls preload="metadata">
+                <source src="/api/video/{{ recording_id }}" type="video/webm">
+                Your browser does not support the video tag.
+            </video>
+        </div>
+
+        <div class="recording-info">
+            <div class="info-item">
+                <div class="info-label">Duration</div>
+                <div class="info-value">{{ recording.duration }}</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">File Size</div>
+                <div class="info-value">{{ "%.1f MB" % (recording.size_bytes / (1024*1024)) }}</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Created</div>
+                <div class="info-value">{{ recording.created_at[:10] }}</div>
+            </div>
+        </div>
+
+        <div class="download-section">
+            <a href="/api/download/{{ recording_id }}" class="download-btn">
+                📥 Download Recording
+            </a>
+        </div>
+
+        <div class="create-new">
+            <p>Need to record another issue?</p>
+            <a href="/recording" class="create-btn">🎬 Create New Recording</a>
+        </div>
+    </div>
+</body>
+</html>
+        ''', recording=recording, recording_id=recording_id)
+        
+    except Exception as e:
+        print(f"❌ Error serving recording {recording_id}: {str(e)}")
+        return "Internal Server Error", 500
+
+@app.route('/api/video/<recording_id>')
+def serve_video(recording_id):
+    """Serve video file for streaming"""
+    try:
+        if recording_id not in recordings_storage:
+            return "Recording not found", 404
+        
+        recording = recordings_storage[recording_id]
+        
+        return Response(
+            recording['data'],
+            mimetype=recording['content_type'],
+            headers={
+                'Content-Disposition': f'inline; filename="{recording["filename"]}"',
+                'Content-Length': str(recording['size_bytes'])
+            }
+        )
+    except Exception as e:
+        print(f"❌ Error serving video {recording_id}: {str(e)}")
+        return "Internal Server Error", 500
+
+@app.route('/api/download/<recording_id>')
+def download_recording(recording_id):
+    """Download recording file"""
+    try:
+        if recording_id not in recordings_storage:
+            return "Recording not found", 404
+        
+        recording = recordings_storage[recording_id]
+        
+        return Response(
+            recording['data'],
+            mimetype='application/octet-stream',
+            headers={
+                'Content-Disposition': f'attachment; filename="{recording["filename"]}"',
+                'Content-Length': str(recording['size_bytes'])
+            }
+        )
+    except Exception as e:
+        print(f"❌ Error downloading recording {recording_id}: {str(e)}")
+        return "Internal Server Error", 500
 
 @app.route('/health')
 def health():
@@ -936,21 +1200,21 @@ def health():
 @app.route('/api/info')
 def api_info():
     return jsonify({
-        "app_name": "Blueshift Support Screen Recording Tool",
-        "version": "2.0.0-googledrive",
-        "description": "Screen recording tool with Google Drive integration",
-        "features": ["screen_recording", "google_drive_upload", "shareable_links", "admin_dashboard"],
-        "storage": "Google Drive",
+        "app_name": "Blueshift Support Screen Capture",
+        "version": "2.0.0-unique-urls",
+        "description": "Screen capture tool with unique shareable URLs",
+        "features": ["screen_recording", "unique_urls", "shareable_links", "admin_dashboard"],
+        "storage": "In-Memory",
         "endpoints": {
             "customer_interface": "/recording",
             "admin_dashboard": "/admin",
-            "upload_api": "/api/upload-recording",
+            "store_api": "/api/store-recording",
             "health_check": "/health"
         }
     })
 
 if __name__ == '__main__':
-    print("🚀 Starting Blueshift Support Screen Recording Tool v2.0")
+    print("🚀 Starting Blueshift Support Screen Capture v2.0")
     print("📋 Customer interface: /recording")
     print("🛠️  Admin dashboard: /admin")
     
